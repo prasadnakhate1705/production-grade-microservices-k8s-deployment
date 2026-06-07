@@ -1,0 +1,84 @@
+name: Infrastructure (Terraform)
+
+# Runs when terraform files change on main, or on any PR touching them
+on:
+  push:
+    branches: [main]
+    paths:
+      - "terraform-aws/**"
+  pull_request:
+    paths:
+      - "terraform-aws/**"
+
+permissions:
+  id-token: write   # required for OIDC token request
+  contents: read
+  pull-requests: write  # to post plan output as PR comment
+
+env:
+  AWS_REGION: us-east-1
+  TF_DIR: terraform-aws
+
+jobs:
+  terraform:
+    name: Terraform Plan / Apply
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout code ─────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Authenticate to AWS via OIDC (no static credentials) ──────────
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ── 3. Install Terraform CLI ──────────────────────────────────────────
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.6"
+
+      # ── 4. Init — downloads providers and modules ─────────────────────────
+      - name: Terraform Init
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform init
+
+      # ── 5. Validate — catches syntax errors before plan ───────────────────
+      - name: Terraform Validate
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform validate
+
+      # ── 6. Plan — always runs (on both PR and push to main) ───────────────
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform plan -no-color -out=tfplan
+        continue-on-error: true   # don't fail the job so we can post the comment
+
+      # ── 7. Post plan output as PR comment (on pull requests only) ─────────
+      - name: Post Plan to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const output = `#### Terraform Plan 📋
+            \`\`\`
+            ${{ steps.plan.outputs.stdout }}
+            \`\`\`
+            `;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
+
+      # ── 8. Apply — only on push to main (not on PRs) ──────────────────────
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform apply -auto-approve tfplan
