@@ -65,9 +65,19 @@ resource "aws_security_group" "eks_cluster" {
   tags = { Name = "${var.cluster_name}-cluster-sg" }
 }
 
+# ⚠️  NOT CURRENTLY ATTACHED TO ANYTHING.
+# Neither aws_eks_node_group below uses a launch_template, and managed node
+# groups only pick up a custom SG through one. Without it EKS attaches its own
+# cluster security group instead, which already permits node-to-node and
+# control-plane traffic — so the cluster works, but every rule defined on this
+# SG (and the two aws_security_group_rule blocks that reference it) is inert.
+#
+# Left in place because it documents the intended posture, but be aware: any
+# rule you add here will silently have no effect. To make it live, add a
+# launch_template to the node groups with vpc_security_group_ids = [this.id].
 resource "aws_security_group" "eks_nodes" {
   name        = "${var.cluster_name}-nodes-sg"
-  description = "EKS worker nodes security group"
+  description = "EKS worker nodes security group (see warning above — not attached)"
   vpc_id      = var.vpc_id
 
   ingress {
@@ -135,14 +145,92 @@ resource "aws_eks_cluster" "main" {
   ]
 }
 
-# ─── Node Group ───────────────────────────────────────────────────────────────
+# ─── Node Group: system ───────────────────────────────────────────────────────
+# Hosts: istiod, istio-ingressgateway, ArgoCD, CoreDNS
+# Taint repels any pod that doesn't explicitly tolerate it
 
-resource "aws_eks_node_group" "main" {
+resource "aws_eks_node_group" "system" {
   cluster_name    = aws_eks_cluster.main.name
-  node_group_name = "${var.cluster_name}-nodes"
+  node_group_name = "${var.cluster_name}-system-nodes"
   node_role_arn   = aws_iam_role.eks_nodes.arn
   subnet_ids      = var.private_subnet_ids
   instance_types  = [var.node_instance_type]
+  capacity_type   = var.system_capacity_type
+
+  scaling_config {
+    desired_size = var.system_node_desired_size
+    min_size     = var.system_node_min_size
+    max_size     = var.system_node_max_size
+  }
+
+  update_config {
+    max_unavailable = 1
+  }
+
+  labels = {
+    role = "system"
+  }
+
+  taint {
+    key    = "dedicated"
+    value  = "system"
+    effect = "NO_SCHEDULE"
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.eks_worker_node_policy,
+    aws_iam_role_policy_attachment.eks_cni_policy,
+    aws_iam_role_policy_attachment.eks_ecr_readonly,
+  ]
+}
+
+# ─── CoreDNS addon ────────────────────────────────────────────────────────────
+# CoreDNS is the cluster's internal DNS. It runs as a Deployment, so unlike the
+# aws-node / kube-proxy DaemonSets it does NOT tolerate node taints by default.
+# Because BOTH our node groups are tainted (dedicated=system / dedicated=app),
+# the default CoreDNS pods would stay Pending and break all in-cluster DNS.
+# We manage the addon here and inject a toleration so it lands on system nodes.
+
+resource "aws_eks_addon" "coredns" {
+  cluster_name  = aws_eks_cluster.main.name
+  addon_name    = "coredns"
+  addon_version = var.coredns_addon_version
+
+  # If a default CoreDNS already exists, take it over instead of failing.
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  configuration_values = jsonencode({
+    tolerations = [{
+      key      = "dedicated"
+      operator = "Equal"
+      value    = "system"
+      effect   = "NoSchedule"
+    }]
+    # One replica per system node; spread them across the 2 nodes for HA.
+    replicaCount = var.system_node_desired_size
+  })
+
+  # CoreDNS pods can only schedule once the system nodes exist.
+  depends_on = [aws_eks_node_group.system]
+}
+
+# ─── Node Group: app ──────────────────────────────────────────────────────────
+# Hosts: all 11 microservices + their Envoy sidecars.
+# Intentionally NOT tainted: the microservices carry no tolerations, so a taint
+# here would leave them unschedulable (repelled from system nodes by the system
+# taint AND from these nodes). Isolation still holds — system pods are pinned to
+# system nodes via nodeSelector role=system, and app pods (no toleration) cannot
+# land on the tainted system nodes, so they naturally settle on these app nodes.
+# The role=app label is kept so workloads can still target these nodes if needed.
+
+resource "aws_eks_node_group" "app" {
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = "${var.cluster_name}-app-nodes"
+  node_role_arn   = aws_iam_role.eks_nodes.arn
+  subnet_ids      = var.private_subnet_ids
+  instance_types  = var.app_instance_types
+  capacity_type   = var.app_capacity_type
 
   scaling_config {
     desired_size = var.node_desired_size
@@ -152,6 +240,10 @@ resource "aws_eks_node_group" "main" {
 
   update_config {
     max_unavailable = 1
+  }
+
+  labels = {
+    role = "app"
   }
 
   depends_on = [

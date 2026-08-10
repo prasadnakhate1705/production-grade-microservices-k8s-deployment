@@ -1,0 +1,43 @@
+# Istio ingress routing for the frontend.
+#
+# Gateway        — binds to the istio-ingressgateway pod (selector istio=ingressgateway,
+#                  the label the Istio "gateway" Helm release applies) and opens port 80.
+# VirtualService — routes all HTTP traffic arriving on that gateway to the
+#                  frontend ClusterIP Service on port 80.
+#
+# Without these two, the ingressgateway's external NLB accepts traffic but has
+# no route to the frontend, so requests get 404 (no virtual host configured).
+{{- if .Values.frontend.istioGateway.create }}
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: frontend-gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*"
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: frontend-ingress
+  namespace: {{ .Release.Namespace }}
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - frontend-gateway
+  http:
+  - route:
+    - destination:
+        host: {{ .Values.frontend.name }}
+        port:
+          number: 80
+{{- end }}

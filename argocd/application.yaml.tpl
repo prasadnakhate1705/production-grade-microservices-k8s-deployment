@@ -15,9 +15,14 @@ spec:
     path: helm-chart            # where the Helm chart lives in the repo
 
     helm:
-      # values.yaml is read from the repo — CI updates images.tag here on every deploy
+      # Both files are read from the repo. Order matters — later files win:
+      #   values.yaml        hand-owned: replica counts, resources, feature flags
+      #   values-images.yaml CI-owned:   per-service image tags, rewritten each deploy
+      # Splitting them keeps CI's mechanical rewrites away from the commented file,
+      # and makes each deploy commit a minimal, reviewable diff.
       valueFiles:
         - values.yaml
+        - values-images.yaml
 
       # These parameters override values.yaml — set once, never change
       # images.repository is dynamic (depends on your AWS account) so we inject it here
@@ -32,14 +37,20 @@ spec:
 
   destination:
     server: https://kubernetes.default.svc   # deploy to the same cluster ArgoCD runs in
-    namespace: default
+    namespace: e-commerce-app                 # injection-enabled namespace (see managedNamespaceMetadata below)
 
   syncPolicy:
     automated:
       prune: true       # if you delete a service from helm-chart/, ArgoCD removes it from K8s
       selfHeal: true    # if someone runs kubectl manually and changes something, ArgoCD reverts it
+    # Guarantees the destination namespace carries istio-injection=enabled, so every
+    # pod ArgoCD deploys here gets an Envoy sidecar. Without this the namespace could
+    # be created unlabeled and the mesh would never form.
+    managedNamespaceMetadata:
+      labels:
+        istio-injection: enabled
     syncOptions:
-      - CreateNamespace=true    # create namespace if it doesn't exist
+      - CreateNamespace=true    # create namespace if it doesn't exist (labeled per above)
       - ServerSideApply=true    # use server-side apply (better for large resources)
     retry:
       limit: 3                  # retry failed syncs up to 3 times

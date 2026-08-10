@@ -7,31 +7,129 @@ on:
     paths:
       - "src/**"
       - "helm-chart/**"
-      - "!helm-chart/values.yaml"   # exclude: avoid loop when CI updates this file
+      # exclude: this is the file THIS workflow writes — including it would loop
+      - "!helm-chart/values-images.yaml"
+  workflow_dispatch:   # manual run; always rebuilds every service (see below)
 
 permissions:
   id-token: write    # OIDC — authenticate to AWS
-  contents: write    # needed to commit + push the updated values.yaml
+  contents: write    # needed to commit + push the updated values-images.yaml
 
 env:
   AWS_REGION: us-east-1
 
 jobs:
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 1: Build all 11 Docker images and push to ECR
-  # Output: image tag (short git SHA) + ECR registry URL
+  # JOB 1: Work out which services actually changed.
+  #
+  # Emits a matrix of only those services, so editing one microservice rebuilds
+  # one image instead of eleven. The unchanged services keep the tag they
+  # already have in values-images.yaml, which means their rendered Deployment is
+  # byte-identical and Kubernetes performs NO rollout for them.
+  #
+  # Falls back to building everything whenever the diff base is unusable —
+  # a manual dispatch, the first push to a branch (before = all zeros), or a
+  # force-push where the old commit is gone. Building too much is wasteful;
+  # building too little silently ships a stale image, so the fallback errs safe.
   # ────────────────────────────────────────────────────────────────────────────
-  build-and-push:
-    name: Build & Push to ECR
+  changes:
+    name: Detect changed services
     runs-on: ubuntu-latest
     outputs:
-      image_tag:    ${{ steps.meta.outputs.tag }}
-      ecr_registry: ${{ steps.login-ecr.outputs.registry }}
-
+      matrix: ${{ steps.detect.outputs.matrix }}
+      any:    ${{ steps.detect.outputs.any }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need history to diff against the previous commit
 
+      - name: Detect
+        id: detect
+        env:
+          BEFORE:     ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          # service | watch path | build context | values.yaml key
+          # watch path and build context differ only for cartservice, whose
+          # Dockerfile sits one level deeper than its source tree.
+          CATALOG='adservice|src/adservice|src/adservice|adService
+          cartservice|src/cartservice|src/cartservice/src|cartService
+          checkoutservice|src/checkoutservice|src/checkoutservice|checkoutService
+          currencyservice|src/currencyservice|src/currencyservice|currencyService
+          emailservice|src/emailservice|src/emailservice|emailService
+          frontend|src/frontend|src/frontend|frontend
+          loadgenerator|src/loadgenerator|src/loadgenerator|loadGenerator
+          paymentservice|src/paymentservice|src/paymentservice|paymentService
+          productcatalogservice|src/productcatalogservice|src/productcatalogservice|productCatalogService
+          recommendationservice|src/recommendationservice|src/recommendationservice|recommendationService
+          shippingservice|src/shippingservice|src/shippingservice|shippingService'
+
+          BUILD_ALL=false
+          if [ "$EVENT_NAME" != "push" ]; then
+            echo "── Manual dispatch — rebuilding every service."
+            BUILD_ALL=true
+          elif [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "── No usable diff base (new branch) — rebuilding every service."
+            BUILD_ALL=true
+          elif ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            echo "── Base commit $BEFORE is unreachable (force-push?) — rebuilding every service."
+            BUILD_ALL=true
+          fi
+
+          if [ "$BUILD_ALL" = "true" ]; then
+            FILES=""
+          else
+            FILES=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
+            echo "── Changed files:"
+            echo "$FILES" | sed 's/^/     /'
+          fi
+
+          INCLUDE='[]'
+          while IFS='|' read -r svc watch ctx key; do
+            svc=$(echo "$svc" | xargs)     # trim the YAML block indentation
+            watch=$(echo "$watch" | xargs)
+            ctx=$(echo "$ctx" | xargs)
+            key=$(echo "$key" | xargs)
+            [ -z "$svc" ] && continue
+
+            if [ "$BUILD_ALL" = "true" ] || echo "$FILES" | grep -q "^${watch}/"; then
+              INCLUDE=$(printf '%s' "$INCLUDE" | jq -c \
+                --arg s "$svc" --arg c "$ctx" --arg k "$key" \
+                '. + [{service:$s, context:$c, valuesKey:$k}]')
+            fi
+          done <<< "$CATALOG"
+
+          COUNT=$(printf '%s' "$INCLUDE" | jq 'length')
+          echo "matrix=$INCLUDE" >> "$GITHUB_OUTPUT"
+          if [ "$COUNT" -gt 0 ]; then
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "any=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "── Building $COUNT service(s):"
+          printf '%s' "$INCLUDE" | jq -r '.[].service' | sed 's/^/     /'
+          if [ "$COUNT" -eq 0 ]; then
+            echo "     (none — chart-only change; ArgoCD will still sync it from git)"
+          fi
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # JOB 2: Resolve the image tag and ECR registry ONCE.
+  # Matrix jobs cannot cleanly export a shared output, so computing it here
+  # guarantees every parallel build agrees on the same tag.
+  # ────────────────────────────────────────────────────────────────────────────
+  prepare:
+    name: Resolve tag & registry
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.any == 'true'
+    outputs:
+      image_tag:    ${{ steps.meta.outputs.tag }}
+      ecr_registry: ${{ steps.login-ecr.outputs.registry }}
+    steps:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -46,79 +144,124 @@ jobs:
         id: meta
         run: echo "tag=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
 
-      - name: Build and push all services
-        env:
-          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          TAG:      ${{ steps.meta.outputs.tag }}
-        run: |
-          set -e
+  # ────────────────────────────────────────────────────────────────────────────
+  # JOB 3: Build the changed images — one parallel job per service.
+  #
+  # Each leg gets its own clean runner, which removes the disk-exhaustion risk of
+  # stacking JDK + .NET + Node + Python builder layers on a single ~14 GB VM, and
+  # its own scoped buildx cache so a Go build never evicts the Java one.
+  # ────────────────────────────────────────────────────────────────────────────
+  build-and-push:
+    name: Build ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    needs: [changes, prepare]
+    if: needs.changes.outputs.any == 'true'
+    strategy:
+      # Don't cancel sibling builds because one service failed — seeing every
+      # failure in one run beats fixing them one push at a time.
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.matrix) }}
 
-          build_and_push() {
-            local service=$1
-            local dockerfile=$2
-            local context=$3
-            echo "── Building $service → $REGISTRY/$service:$TAG"
-            docker build --file "$dockerfile" --tag "$REGISTRY/$service:$TAG" "$context"
-            docker push "$REGISTRY/$service:$TAG"
-          }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-          # Standard services
-          for service in \
-            adservice checkoutservice currencyservice emailservice \
-            frontend loadgenerator paymentservice productcatalogservice \
-            recommendationservice shippingservice; do
-            build_and_push "$service" "src/$service/Dockerfile" "src/$service"
-          done
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-          # cartservice — Dockerfile is one level deeper
-          build_and_push "cartservice" \
-            "src/cartservice/src/Dockerfile" \
-            "src/cartservice/src"
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # buildx is what enables the layer cache below; the stock docker builder
+      # cannot import/export GitHub Actions cache.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.context }}/Dockerfile
+          push: true
+          tags: ${{ needs.prepare.outputs.ecr_registry }}/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
+          # GitHub caps the cache at 10 GB per repo and evicts least-recently-used,
+          # so per-service scopes degrade gracefully rather than thrashing.
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 2: Update values.yaml with new image tag and push to git
-  # ArgoCD watches this file — the push triggers an automatic deployment
+  # JOB 4: Write the new tags into values-images.yaml and push.
+  # That commit is what ArgoCD notices; it is the entire deployment trigger.
+  #
+  # Only the services that were actually rebuilt get their tag rewritten, so the
+  # commit diff is exactly as small as the change that caused it.
+  #
+  # `needs` is AND-gated on success, so one failed matrix leg stops the rollout —
+  # the cluster is never pointed at a tag that is missing for some service.
   # ────────────────────────────────────────────────────────────────────────────
   update-values:
-    name: Update Image Tag → Trigger ArgoCD
+    name: Update Image Tags → Trigger ArgoCD
     runs-on: ubuntu-latest
-    needs: build-and-push    # wait for all images to be pushed first
+    needs: [changes, prepare, build-and-push]
+    if: needs.changes.outputs.any == 'true'
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Use a token so the push triggers other workflows (GITHUB_TOKEN push does not)
+          # A GITHUB_TOKEN push deliberately does NOT trigger further workflow
+          # runs, which is what we want: this job commits back to the branch it
+          # was triggered from, so anything else would loop. The [skip ci] marker
+          # and the values-images.yaml path exclusion are belt-and-braces.
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Update images.tag in values.yaml
+      - name: Write new tags into values-images.yaml
         env:
-          NEW_TAG:      ${{ needs.build-and-push.outputs.image_tag }}
-          ECR_REGISTRY: ${{ needs.build-and-push.outputs.ecr_registry }}
+          NEW_TAG:      ${{ needs.prepare.outputs.image_tag }}
+          ECR_REGISTRY: ${{ needs.prepare.outputs.ecr_registry }}
+          MATRIX:       ${{ needs.changes.outputs.matrix }}
         run: |
-          # Replace the tag line in values.yaml
-          # Before: tag: "a1b2c3d4"
-          # After:  tag: "e5f6g7h8"
-          sed -i "s|^  tag:.*|  tag: \"$NEW_TAG\"|" helm-chart/values.yaml
+          set -euo pipefail
 
-          # Also update the repository to point at ECR (idempotent — same value each time)
-          sed -i "s|^  repository:.*|  repository: $ECR_REGISTRY|" helm-chart/values.yaml
+          # yq (mikefarah v4) is preinstalled on ubuntu-latest. Used instead of
+          # sed because these are nested keys — sed on nested YAML is how you get
+          # a corrupted values file at 2am.
+          yq -i ".images.repository = \"${ECR_REGISTRY}\"" helm-chart/values-images.yaml
 
-          echo "── values.yaml updated:"
-          grep -A2 "^images:" helm-chart/values.yaml
+          for KEY in $(printf '%s' "$MATRIX" | jq -r '.[].valuesKey'); do
+            echo "── ${KEY}.image.tag = ${NEW_TAG}"
+            yq -i ".${KEY}.image.tag = \"${NEW_TAG}\"" helm-chart/values-images.yaml
+          done
+
+          echo "── Resulting tags:"
+          yq -o=props '.. | select(has("tag"))' helm-chart/values-images.yaml 2>/dev/null \
+            | sed 's/^/     /' \
+            || grep -B1 "tag:" helm-chart/values-images.yaml | sed 's/^/     /'
 
       - name: Commit and push
         env:
-          NEW_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+          NEW_TAG: ${{ needs.prepare.outputs.image_tag }}
         run: |
+          set -euo pipefail
+
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add helm-chart/values.yaml
+          git add helm-chart/values-images.yaml
+
+          # Nothing to do if the tags are unchanged (e.g. a re-run of the same
+          # SHA). Without this guard `git commit` exits 1 and fails the job.
+          if git diff --cached --quiet; then
+            echo "── values-images.yaml already at $NEW_TAG — nothing to commit."
+            exit 0
+          fi
 
           # [skip ci] prevents this commit from triggering another workflow run
           git commit -m "ci: deploy image tag $NEW_TAG [skip ci]"
           git push
 
           echo "── Pushed. ArgoCD will detect the change and sync the cluster automatically."
-          echo "── Watch progress at your ArgoCD UI."

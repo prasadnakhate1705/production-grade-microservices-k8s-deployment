@@ -42,6 +42,37 @@ resource "null_resource" "install_argocd" {
   ]
 }
 
+# Step 3b — pin every ArgoCD workload onto the system nodes
+# The upstream install.yaml sets no nodeSelector/toleration, so by default
+# ArgoCD lands on the (untainted) app nodes alongside the microservices. We
+# patch all ArgoCD Deployments + the application-controller StatefulSet with:
+#   nodeSelector role=system  → forces them onto system nodes
+#   toleration dedicated=system → lets them past the system node taint
+resource "null_resource" "pin_argocd_to_system" {
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    command     = <<-EOT
+      set -e
+      PATCH='{"spec":{"template":{"spec":{"nodeSelector":{"role":"system"},"tolerations":[{"key":"dedicated","operator":"Equal","value":"system","effect":"NoSchedule"}]}}}}'
+
+      echo "── Pinning ArgoCD Deployments to system nodes..."
+      for d in $(kubectl get deploy -n argocd -o name); do
+        kubectl patch -n argocd "$d" --type merge -p "$PATCH"
+      done
+
+      echo "── Pinning ArgoCD application-controller StatefulSet to system nodes..."
+      kubectl patch statefulset argocd-application-controller -n argocd --type merge -p "$PATCH"
+
+      echo "── Waiting for ArgoCD to reschedule onto system nodes..."
+      kubectl rollout status deployment argocd-server -n argocd --timeout=300s
+
+      echo "── ArgoCD is now pinned to system nodes."
+    EOT
+  }
+
+  depends_on = [null_resource.install_argocd]
+}
+
 # Step 4 + 5 — generate the Application manifest and apply it
 # Uses sed to replace the two placeholders in application.yaml.tpl:
 #   REPLACE_GITHUB_REPO   → e.g. prasadnakhate/microservices-demo
@@ -66,7 +97,13 @@ resource "null_resource" "apply_argocd_application" {
     EOT
   }
 
-  depends_on = [null_resource.install_argocd]
+  # Istio must be fully up before ArgoCD syncs the chart: istio_ingress chains
+  # istiod + istio_base (CRDs), so the Gateway/VirtualService CRs are valid and
+  # the injection webhook is ready to add sidecars to the microservice pods.
+  depends_on = [
+    null_resource.pin_argocd_to_system,
+    helm_release.istio_ingress,
+  ]
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

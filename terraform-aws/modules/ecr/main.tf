@@ -7,7 +7,7 @@ resource "aws_ecr_repository" "services" {
   image_tag_mutability = "MUTABLE"
 
   image_scanning_configuration {
-    scan_on_push = true   # AWS scans every pushed image for known CVEs
+    scan_on_push = true # AWS scans every pushed image for known CVEs
   }
 
   tags = {

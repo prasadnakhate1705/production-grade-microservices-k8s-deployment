@@ -14,9 +14,21 @@ module "eks" {
   private_subnet_ids = module.vpc.private_subnet_ids
   public_subnet_ids  = module.vpc.public_subnet_ids
   node_instance_type = var.node_instance_type
-  node_desired_size  = var.node_desired_size
-  node_min_size      = var.node_min_size
-  node_max_size      = var.node_max_size
+  app_instance_types = var.app_instance_types
+
+  # capacity type per group — system on-demand for stability, app on spot for cost
+  system_capacity_type = var.system_capacity_type
+  app_capacity_type    = var.app_capacity_type
+
+  # app node group — hosts the 11 microservices
+  node_desired_size = var.node_desired_size
+  node_min_size     = var.node_min_size
+  node_max_size     = var.node_max_size
+
+  # system node group — hosts Istio + ArgoCD
+  system_node_desired_size = var.system_node_desired_size
+  system_node_min_size     = var.system_node_min_size
+  system_node_max_size     = var.system_node_max_size
 }
 
 module "ecr" {

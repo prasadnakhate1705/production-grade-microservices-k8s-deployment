@@ -30,20 +30,62 @@ variable "public_subnet_ids" {
 
 variable "node_instance_type" {
   type        = string
-  description = "EC2 instance type for worker nodes"
+  description = "EC2 instance type for the system node group"
+}
+
+variable "app_instance_types" {
+  type        = list(string)
+  description = "Instance types for the app node group. A diversified list improves Spot capacity availability (all same 2 vCPU / 4 GB size)."
+  default     = ["t3.medium", "t3a.medium"]
+}
+
+variable "system_capacity_type" {
+  type        = string
+  description = "Capacity type for system nodes: ON_DEMAND or SPOT."
+  default     = "ON_DEMAND"
+}
+
+variable "app_capacity_type" {
+  type        = string
+  description = "Capacity type for app nodes: ON_DEMAND or SPOT."
+  default     = "SPOT"
+}
+
+variable "coredns_addon_version" {
+  type        = string
+  description = "CoreDNS EKS addon version. Leave null to let EKS pick the default for the cluster version."
+  default     = null
 }
 
 variable "node_desired_size" {
   type        = number
-  description = "Desired number of worker nodes"
+  description = "Desired number of app worker nodes"
 }
 
 variable "node_min_size" {
   type        = number
-  description = "Minimum number of worker nodes"
+  description = "Minimum number of app worker nodes"
 }
 
 variable "node_max_size" {
   type        = number
-  description = "Maximum number of worker nodes"
+  description = "Maximum number of app worker nodes"
+}
+
+variable "system_node_desired_size" {
+  type        = number
+  description = "Desired number of system nodes (Istio + ArgoCD)"
+  default     = 2
+}
+
+variable "system_node_min_size" {
+  type        = number
+  description = "Minimum number of system nodes"
+  default     = 2
+}
+
+variable "system_node_max_size" {
+  type        = number
+  description = "Maximum number of system nodes"
+  default     = 2
 }

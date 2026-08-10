@@ -68,7 +68,7 @@ spec:
               - ALL
           privileged: false
           readOnlyRootFilesystem: true
-        image: {{ .Values.images.repository }}/{{ .Values.checkoutService.name }}:{{ .Values.images.tag | default .Chart.AppVersion }}
+        image: {{ .Values.images.repository }}/{{ .Values.checkoutService.name }}:{{ .Values.checkoutService.image.tag | default .Values.images.tag | default .Chart.AppVersion }}
         ports:
         - containerPort: 5050
         readinessProbe:
@@ -92,20 +92,6 @@ spec:
           value: "{{ .Values.currencyService.name }}:7000"
         - name: CART_SERVICE_ADDR
           value: "{{ .Values.cartService.name }}:7070"
-        {{- if .Values.opentelemetryCollector.create }}
-        - name: COLLECTOR_SERVICE_ADDR
-          value: "{{ .Values.opentelemetryCollector.name }}:4317"
-        - name: OTEL_SERVICE_NAME
-          value: "{{ .Values.checkoutService.name }}"
-        {{- end }}
-        {{- if .Values.googleCloudOperations.tracing }}
-        - name: ENABLE_TRACING
-          value: "1"
-        {{- end }}
-        {{- if .Values.googleCloudOperations.profiler }}
-        - name: ENABLE_PROFILER
-          value: "1"
-        {{- end }}
         resources:
           {{- toYaml .Values.checkoutService.resources | nindent 10 }}
 ---
@@ -169,9 +155,6 @@ spec:
     - ./{{ .Values.paymentService.name }}.{{ .Release.Namespace }}.svc.cluster.local
     - ./{{ .Values.productCatalogService.name }}.{{ .Release.Namespace }}.svc.cluster.local
     - ./{{ .Values.shippingService.name }}.{{ .Release.Namespace }}.svc.cluster.local
-    {{- if .Values.opentelemetryCollector.create }}
-    - ./{{ .Values.opentelemetryCollector.name }}.{{ .Release.Namespace }}.svc.cluster.local
-    {{- end }}
 {{- end }}
 {{- if .Values.authorizationPolicies.create }}
 ---

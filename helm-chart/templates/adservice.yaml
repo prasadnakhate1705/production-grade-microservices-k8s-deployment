@@ -69,7 +69,7 @@ spec:
               - ALL
           privileged: false
           readOnlyRootFilesystem: true
-        image: {{ .Values.images.repository }}/{{ .Values.adService.name }}:{{ .Values.images.tag | default .Chart.AppVersion }}
+        image: {{ .Values.images.repository }}/{{ .Values.adService.name }}:{{ .Values.adService.image.tag | default .Values.images.tag | default .Chart.AppVersion }}
         ports:
         - containerPort: 9555
         env:
@@ -142,9 +142,6 @@ spec:
   egress:
   - hosts:
     - istio-system/*
-    {{- if .Values.opentelemetryCollector.create }}
-    - ./{{ .Values.opentelemetryCollector.name }}.{{ .Release.Namespace }}.svc.cluster.local
-    {{- end }}
 {{- end }}
 {{- if .Values.authorizationPolicies.create }}
 ---

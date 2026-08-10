@@ -70,7 +70,7 @@ spec:
                 - ALL
             privileged: false
             readOnlyRootFilesystem: true
-          image: {{ .Values.images.repository }}/{{ .Values.frontend.name }}:{{ .Values.images.tag | default .Chart.AppVersion }}
+          image: {{ .Values.images.repository }}/{{ .Values.frontend.name }}:{{ .Values.frontend.image.tag | default .Values.images.tag | default .Chart.AppVersion }}
           ports:
           - containerPort: 8080
           readinessProbe:
@@ -110,20 +110,6 @@ spec:
             value: "{{ .Values.shoppingAssistantService.name }}:80"
           - name: ENV_PLATFORM
             value: {{ .Values.frontend.platform | quote }}
-          {{- if .Values.opentelemetryCollector.create }}
-          - name: COLLECTOR_SERVICE_ADDR
-            value: "{{ .Values.opentelemetryCollector.name }}:4317"
-          - name: OTEL_SERVICE_NAME
-            value: "{{ .Values.frontend.name }}"
-          {{- end }}
-          {{- if .Values.googleCloudOperations.tracing }}
-          - name: ENABLE_TRACING
-            value: "1"
-          {{- end }}
-          {{- if .Values.googleCloudOperations.profiler }}
-          - name: ENABLE_PROFILER
-            value: "1"
-          {{- end }}
           - name: CYMBAL_BRANDING
             value: {{ .Values.frontend.cymbalBranding | quote }}
           - name: ENABLE_ASSISTANT
@@ -186,14 +172,6 @@ spec:
     - podSelector:
         matchLabels:
           app: {{ .Values.loadGenerator.name }}
-    {{- if .Values.frontend.virtualService.create }}
-    - namespaceSelector:
-        matchLabels:
-          kubernetes.io/metadata.name: {{ .Values.frontend.virtualService.gateway.namespace }}
-      podSelector:
-        matchLabels:
-          {{ .Values.frontend.virtualService.gateway.labelKey }}: {{ .Values.frontend.virtualService.gateway.labelValue }}
-    {{- end }}
     ports:
      - port: 8080
        protocol: TCP
@@ -222,9 +200,6 @@ spec:
     - ./{{ .Values.productCatalogService.name }}.{{ .Release.Namespace }}.svc.cluster.local
     - ./{{ .Values.recommendationService.name }}.{{ .Release.Namespace }}.svc.cluster.local
     - ./{{ .Values.shippingService.name }}.{{ .Release.Namespace }}.svc.cluster.local
-    {{- if .Values.opentelemetryCollector.create }}
-    - ./{{ .Values.opentelemetryCollector.name }}.{{ .Release.Namespace }}.svc.cluster.local
-    {{- end }}
 {{- end }}
 {{- if .Values.authorizationPolicies.create }}
 ---
@@ -249,9 +224,6 @@ spec:
         {{- else }}
         - cluster.local/ns/{{ .Release.Namespace }}/sa/default
         {{- end }}
-        {{- if .Values.frontend.virtualService.create }}
-        - cluster.local/ns/{{ .Values.frontend.virtualService.gateway.namespace }}/sa/{{ .Values.frontend.virtualService.gateway.name }}
-        {{- end }}
     to:
   {{- end }}
     - operation:
@@ -260,26 +232,5 @@ spec:
         - POST
         ports:
         - "8080"
-{{- end }}
-{{- if .Values.frontend.virtualService.create }}
----
-apiVersion: networking.istio.io/v1alpha3
-kind: VirtualService
-metadata:
-  name: {{ .Values.frontend.name }}
-  namespace: {{ .Release.Namespace }}
-spec:
-  {{- with .Values.frontend.virtualService.hosts }}
-  hosts:
-  {{- toYaml . | nindent 2 }}
-  {{- end }}
-  gateways:
-  - {{ .Values.frontend.virtualService.gateway.namespace }}/{{ .Values.frontend.virtualService.gateway.name }}
-  http:
-  - route:
-    - destination:
-        host: {{ .Values.frontend.name }}
-        port:
-          number: 80
 {{- end }}
 {{- end }}

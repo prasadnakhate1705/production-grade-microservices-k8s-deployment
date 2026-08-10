@@ -40,7 +40,16 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "~1.6"
+          # >= 1.11 — required for S3 native state locking (use_lockfile) in providers.tf
+          terraform_version: "~1.11"
+
+      # ── 3b. kubectl — argocd.tf shells out to it from local-exec provisioners
+      # (install ArgoCD, pin it to system nodes, apply the Application). Pinned
+      # rather than relying on whatever the runner image happens to ship.
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.34.0"
 
       # ── 4. Init — downloads providers and modules ─────────────────────────
       - name: Terraform Init
@@ -77,7 +86,16 @@ jobs:
               body: output
             })
 
-      # ── 8. Apply — only on push to main (not on PRs) ──────────────────────
+      # ── 8. Gate — plan ran with continue-on-error so the PR comment could be
+      # posted, which means a FAILED plan would otherwise fall through to apply
+      # and run against a missing or stale tfplan. Fail the job here instead.
+      - name: Fail if plan failed
+        if: steps.plan.outcome == 'failure'
+        run: |
+          echo "::error::terraform plan failed — see the Plan step output above."
+          exit 1
+
+      # ── 9. Apply — only on push to main (not on PRs) ──────────────────────
       - name: Terraform Apply
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         working-directory: ${{ env.TF_DIR }}

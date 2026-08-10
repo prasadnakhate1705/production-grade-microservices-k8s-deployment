@@ -1,0 +1,58 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# MACHINE-GENERATED — DO NOT EDIT BY HAND
+#
+# Written by .github/workflows/deploy.yml on every push to main. ArgoCD layers
+# this file on top of values.yaml (see the valueFiles list in the Application),
+# so anything set here overrides the matching key there.
+#
+# Kept separate from values.yaml on purpose: CI rewrites this file mechanically,
+# and pointing a machine at the hand-written values.yaml would eventually mangle
+# its comments and structure. It also makes the deploy commit a clean two-line
+# diff you can read at a glance.
+#
+# Each tag is the short git SHA of the commit that built that service's image.
+# Only services whose source actually changed get a new tag — the rest keep the
+# SHA they already had, so their rendered Deployment is unchanged and Kubernetes
+# performs no rollout for them.
+#
+# Empty tag = never built yet; the service falls back to images.tag, then to
+# Chart.AppVersion. Before the first CI run every tag below is empty.
+# ─────────────────────────────────────────────────────────────────────────────
+
+images:
+  # Overwritten by CI with the real ECR registry for this AWS account.
+  repository: PLACEHOLDER_ECR_REGISTRY
+
+adService:
+  image:
+    tag: ""
+cartService:
+  image:
+    tag: ""
+checkoutService:
+  image:
+    tag: ""
+currencyService:
+  image:
+    tag: ""
+emailService:
+  image:
+    tag: ""
+frontend:
+  image:
+    tag: ""
+loadGenerator:
+  image:
+    tag: ""
+paymentService:
+  image:
+    tag: ""
+productCatalogService:
+  image:
+    tag: ""
+recommendationService:
+  image:
+    tag: ""
+shippingService:
+  image:
+    tag: ""

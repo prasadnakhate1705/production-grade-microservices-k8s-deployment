@@ -1,38 +1,69 @@
-# Helm chart for Online Boutique
+# Helm chart
 
-If you'd like to deploy Online Boutique via its Helm chart, you could leverage the following instructions.
+Deploys the 11 microservices plus an in-cluster Redis for the cart.
 
-**Warning:** Online Boutique's Helm chart is currently experimental. If you have feedback or run into issues, let us know inside [GitHub Issue #1319](https://github.com/GoogleCloudPlatform/microservices-demo/issues/1319) or by creating a [new GitHub Issue](https://github.com/GoogleCloudPlatform/microservices-demo/issues/new/choose).
+In normal operation you do not run `helm` by hand — ArgoCD renders this chart
+straight from git (see [`argocd/application.yaml.tpl`](../argocd/application.yaml.tpl))
+and syncs it into the `e-commerce-app` namespace. The commands below are for
+local inspection and one-off testing.
 
-Deploy the default setup of Online Boutique:
+## Value files
+
+| File | Owner | Contents |
+| --- | --- | --- |
+| `values.yaml` | hand-edited | everything except image tags; CI never rewrites it, so comments survive |
+| `values-images.yaml` | CI | per-service image tags, rewritten on every deploy |
+
+ArgoCD layers them in that order, so a one-service change rolls only that one
+Deployment — the other ten keep the tag they already had and render byte-identical.
+
+## Render locally
+
 ```sh
-helm upgrade onlineboutique oci://us-docker.pkg.dev/online-boutique-ci/charts/onlineboutique \
-    --install
+helm template ob . \
+    --namespace e-commerce-app \
+    --set images.repository=<account>.dkr.ecr.<region>.amazonaws.com
 ```
 
-Deploy advanced scenario of Online Boutique:
+`images.repository` has no usable default — the ArgoCD Application injects the
+real ECR registry as a parameter, since it depends on the AWS account.
+
+## Install directly (bypasses ArgoCD)
+
 ```sh
-helm upgrade onlineboutique oci://us-docker.pkg.dev/online-boutique-ci/charts/onlineboutique \
+helm upgrade ob . \
     --install \
     --create-namespace \
-    --set images.repository=us-docker.pkg.dev/my-project/microservices-demo \
-    --set frontend.externalService=false \
-    --set redis.create=false \
-    --set cartservice.database.type=spanner \
-    --set cartservice.database.connectionString=projects/my-project/instances/onlineboutique/databases/carts \
-    --set serviceAccounts.create=true \
-    --set authorizationPolicies.create=true \
-    --set networkPolicies.create=true \
-    --set sidecars.create=true \
-    --set frontend.virtualService.create=true \
-    --set 'serviceAccounts.annotations.iam\.gke\.io/gcp-service-account=spanner-db-user@my-project.iam.gserviceaccount.com' \
-    --set serviceAccounts.annotationsOnlyForCartservice=true \
-    -n onlineboutique
+    --namespace e-commerce-app \
+    --set images.repository=<account>.dkr.ecr.<region>.amazonaws.com \
+    --set frontend.platform=aws
 ```
 
-For the full list of configurations, see [values.yaml](./values.yaml).
+Note that ArgoCD has `selfHeal: true`, so if the Application already exists it
+will revert anything you install this way within a few minutes.
 
-You could also find advanced scenarios with these blogs below:
-- [Online Boutique sample’s Helm chart, to simplify the setup of advanced and secured scenarios with Service Mesh and GitOps](https://medium.com/google-cloud/246119e46d53)
-- [gRPC health probes with Kubernetes 1.24+](https://medium.com/google-cloud/b5bd26253a4c)
-- [Use Google Cloud Spanner with the Online Boutique sample](https://medium.com/google-cloud/f7248e077339)
+## Hardening toggles
+
+All default to `false`. They are independent and can be combined:
+
+```sh
+    --set serviceAccounts.create=true \
+    --set networkPolicies.create=true \
+    --set authorizationPolicies.create=true \
+    --set sidecars.create=true \
+    --set seccompProfile.enable=true
+```
+
+`networkPolicies`, `authorizationPolicies` and `sidecars` all assume a service
+mesh is present — turning them on without Istio installed will cut off traffic
+between services.
+
+## Ingress
+
+`frontend.istioGateway.create=true` (the default) creates a Gateway +
+VirtualService that routes the Istio ingress-gateway's NLB to the frontend.
+
+`frontend.externalService` is deliberately `false`: setting it to `true` spins
+up a second AWS NLB pointing straight at the frontend, bypassing the mesh.
+
+For the full list of configurations, see [values.yaml](./values.yaml).

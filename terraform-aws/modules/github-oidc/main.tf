@@ -2,15 +2,20 @@ data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
 # ─── OIDC Provider ────────────────────────────────────────────────────────────
-# Tells AWS to trust GitHub's identity tokens
-# GitHub Actions sends a short-lived JWT; AWS validates it against this provider
-resource "aws_iam_openid_connect_provider" "github" {
-  url             = "https://token.actions.githubusercontent.com"
-  client_id_list  = ["sts.amazonaws.com"]
-
-  # GitHub's OIDC certificate thumbprint
-  # AWS now validates against its own CA store, but the field is still required
-  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
+# Tells AWS to trust GitHub's identity tokens: GitHub Actions sends a short-lived
+# JWT and AWS validates it against this provider.
+#
+# Looked up as a DATA source, not created as a resource. The provider is a
+# single ACCOUNT-WIDE object (one per issuer URL), so any other stack in this
+# account that already registered GitHub would make a `resource` block fail with
+# EntityAlreadyExists. Reading it keeps this module safe to apply alongside them.
+#
+# One-time prerequisite — if the account has never used GitHub OIDC, create it:
+#   aws iam create-open-id-connect-provider \
+#     --url https://token.actions.githubusercontent.com \
+#     --client-id-list sts.amazonaws.com
+data "aws_iam_openid_connect_provider" "github" {
+  url = "https://token.actions.githubusercontent.com"
 }
 
 # ─── IAM Role — assumed by GitHub Actions ─────────────────────────────────────
@@ -21,7 +26,7 @@ resource "aws_iam_role" "github_actions" {
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
-      Principal = { Federated = aws_iam_openid_connect_provider.github.arn }
+      Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn }
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringLike = {
@@ -102,8 +107,83 @@ resource "aws_iam_role_policy_attachment" "eks_deploy" {
 
 # ─── Policy: Terraform state access (for infra workflow) ─────────────────────
 resource "aws_iam_role_policy_attachment" "terraform_infra" {
-  role       = aws_iam_role.github_actions.name
-  # PowerUserAccess lets the infra workflow run terraform apply
+  role = aws_iam_role.github_actions.name
+  # PowerUserAccess covers everything the stack builds EXCEPT IAM — see below.
   # In production, scope this down to only resources Terraform manages
   policy_arn = "arn:aws:iam::aws:policy/PowerUserAccess"
+}
+
+# ─── Policy: IAM access for the infra workflow ────────────────────────────────
+# PowerUserAccess is `NotAction: ["iam:*", "organizations:*", "account:*"]` plus a
+# short allow-list (CreateServiceLinkedRole / DeleteServiceLinkedRole / ListRoles).
+# It therefore grants NO iam:GetRole, iam:GetPolicy or iam:GetOpenIDConnectProvider.
+#
+# This stack manages four IAM roles/policies (EKS cluster role, node role, this
+# CI role, and the two custom policies) and reads the GitHub OIDC provider as a
+# data source. Without the permissions below, `terraform plan` in CI dies with
+# AccessDenied during REFRESH — before it can compare anything — so the infra
+# workflow can never reach apply.
+#
+# Scoped by ARN prefix to this cluster's own resources rather than iam:* — note
+# this does let CI modify its own role, which is unavoidable once CI owns the
+# Terraform that defines that role. The repo-scoped OIDC trust policy above is
+# what keeps that bounded.
+resource "aws_iam_policy" "iam_manage" {
+  name        = "${var.cluster_name}-iam-manage-policy"
+  description = "Scoped IAM access so the infra workflow can plan/apply this stack's roles and policies"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ManageThisStacksRoles"
+        Effect = "Allow"
+        Action = [
+          "iam:GetRole",
+          "iam:CreateRole",
+          "iam:DeleteRole",
+          "iam:UpdateRole",
+          "iam:TagRole",
+          "iam:UntagRole",
+          "iam:PassRole",
+          "iam:ListRolePolicies",
+          "iam:GetRolePolicy",
+          "iam:ListAttachedRolePolicies",
+          "iam:ListInstanceProfilesForRole",
+          "iam:AttachRolePolicy",
+          "iam:DetachRolePolicy",
+        ]
+        Resource = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.cluster_name}-*"
+      },
+      {
+        Sid    = "ManageThisStacksPolicies"
+        Effect = "Allow"
+        Action = [
+          "iam:GetPolicy",
+          "iam:CreatePolicy",
+          "iam:DeletePolicy",
+          "iam:TagPolicy",
+          "iam:UntagPolicy",
+          "iam:GetPolicyVersion",
+          "iam:CreatePolicyVersion",
+          "iam:DeletePolicyVersion",
+          "iam:ListPolicyVersions",
+          "iam:ListEntitiesForPolicy",
+        ]
+        Resource = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:policy/${var.cluster_name}-*"
+      },
+      {
+        # Read-only — the provider is a data source, never created here.
+        Sid      = "ReadGitHubOIDCProvider"
+        Effect   = "Allow"
+        Action   = "iam:GetOpenIDConnectProvider"
+        Resource = data.aws_iam_openid_connect_provider.github.arn
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "iam_manage" {
+  role       = aws_iam_role.github_actions.name
+  policy_arn = aws_iam_policy.iam_manage.arn
 }

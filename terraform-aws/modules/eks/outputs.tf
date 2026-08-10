@@ -17,3 +17,8 @@ output "cluster_version" {
   description = "Kubernetes version"
   value       = aws_eks_cluster.main.version
 }
+
+output "oidc_issuer_url" {
+  description = "OIDC issuer URL — used by the Helm provider and IRSA"
+  value       = aws_eks_cluster.main.identity[0].oidc[0].issuer
+}

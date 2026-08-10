@@ -7,6 +7,12 @@
 .skaffold-*.yaml
 .terraform.lock.hcl
 .terraform/*
+# The pattern above contains a slash, so git anchors it to the REPO ROOT and it
+# does NOT match terraform-aws/.terraform/. That directory holds the downloaded
+# provider binaries (~812 MB, incl. a 719 MB aws provider) — well past GitHub's
+# hard 100 MB per-file limit, so committing it makes the push fail outright.
+# The leading **/ matches at any depth.
+**/.terraform/
 .venv/
 .vs/
 .vscode/
@@ -18,6 +24,23 @@
 *.tfstate*
 *.tfvars
 *~
+
+# ─── Terraform (AWS stack) ───────────────────────────────────────────────────
+# The blanket rules above are inherited from upstream and would silently break
+# CI, so re-include what the terraform-aws stack actually needs in git:
+#
+#   terraform.tfvars      — holds cluster_name / cluster_version / github_repo.
+#                           github_repo has NO default, so without this file a
+#                           CI `terraform plan` fails on a required variable.
+#                           Contains no secrets — only cluster configuration.
+#   .terraform.lock.hcl   — pins provider versions. Committing it is what makes
+#                           your laptop and the CI runner resolve identically.
+!terraform-aws/terraform.tfvars
+!terraform-aws/.terraform.lock.hcl
+
+# Saved plan files are binary and embed resolved variable values — never commit.
+tfplan
+*.tfplan
 bin/
 build/
 Dockerfile.pip

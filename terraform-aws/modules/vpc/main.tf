@@ -1,3 +1,4 @@
+// Get all the avaoilable AZs in the region and use the first 2 for our subnets
 data "aws_availability_zones" "available" {
   state = "available"
 }

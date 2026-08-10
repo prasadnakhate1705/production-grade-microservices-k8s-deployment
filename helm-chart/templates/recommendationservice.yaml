@@ -69,7 +69,7 @@ spec:
               - ALL
           privileged: false
           readOnlyRootFilesystem: true
-        image: {{ .Values.images.repository }}/{{ .Values.recommendationService.name }}:{{ .Values.images.tag | default .Chart.AppVersion }}
+        image: {{ .Values.images.repository }}/{{ .Values.recommendationService.name }}:{{ .Values.recommendationService.image.tag | default .Values.images.tag | default .Chart.AppVersion }}
         ports:
         - containerPort: 8080
         readinessProbe:
@@ -85,20 +85,8 @@ spec:
           value: "8080"
         - name: PRODUCT_CATALOG_SERVICE_ADDR
           value: "{{ .Values.productCatalogService.name }}:3550"
-        {{- if .Values.opentelemetryCollector.create }}
-        - name: COLLECTOR_SERVICE_ADDR
-          value: "{{ .Values.opentelemetryCollector.name }}:4317"
-        - name: OTEL_SERVICE_NAME
-          value: "{{ .Values.recommendationService.name }}"
-        {{- end }}
-        {{- if .Values.googleCloudOperations.tracing }}
-        - name: ENABLE_TRACING
-          value: "1"
-        {{- end }}
-        {{- if not .Values.googleCloudOperations.profiler }}
         - name: DISABLE_PROFILER
           value: "1"
-        {{- end }}
         resources:
           {{- toYaml .Values.recommendationService.resources | nindent 10 }}
 ---
@@ -157,9 +145,6 @@ spec:
   - hosts:
     - istio-system/*
     - ./{{ .Values.productCatalogService.name }}.{{ .Release.Namespace }}.svc.cluster.local
-    {{- if .Values.opentelemetryCollector.create }}
-    - ./{{ .Values.opentelemetryCollector.name }}.{{ .Release.Namespace }}.svc.cluster.local
-    {{- end }}
 {{- end }}
 {{- if .Values.authorizationPolicies.create }}
 ---
