@@ -9,6 +9,11 @@ on:
   pull_request:
     paths:
       - "terraform-aws/**"
+  # Manual trigger. Note the Apply step is gated on `github.event_name == 'push'`,
+  # so a dispatch runs PLAN ONLY and can never change infrastructure. That makes
+  # it a safe way to confirm CI and a local apply agree — a dispatch that reports
+  # "No changes" proves the two resolve identical state.
+  workflow_dispatch:
 
 permissions:
   id-token: write   # required for OIDC token request
