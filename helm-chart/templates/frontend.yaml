@@ -161,6 +161,21 @@ spec:
     ports:
      - port: 8080
        protocol: TCP
+  # Real browser traffic does NOT come from inside this namespace: it arrives at
+  # the istio-ingressgateway pod in istio-system (see frontend-gateway.yaml) and
+  # is proxied from there. A bare podSelector matches only the local namespace,
+  # so without this rule every external request is dropped while the in-namespace
+  # loadgenerator keeps working — the site looks healthy and is unreachable.
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: istio-system
+      podSelector:
+        matchLabels:
+          istio: ingressgateway
+    ports:
+     - port: 8080
+       protocol: TCP
   {{- end }}
   egress:
   - {}
@@ -205,6 +220,12 @@ spec:
   - from:
     - source:
         principals:
+        # The ingress gateway's mesh identity. External traffic is proxied by the
+        # istio-ingressgateway pod, so from this service's point of view the
+        # caller is that gateway's ServiceAccount — not the end user. Listing
+        # only loadGenerator here would deny every request from the internet.
+        # The SA name matches the helm_release "istio_ingress" name in istio.tf.
+        - cluster.local/ns/istio-system/sa/istio-ingressgateway
         {{- if .Values.serviceAccounts.create }}
         - cluster.local/ns/{{ .Release.Namespace }}/sa/{{ .Values.loadGenerator.name }}
         {{- else }}

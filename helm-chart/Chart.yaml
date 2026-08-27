@@ -1,7 +1,6 @@
-
 apiVersion: v2
-name: onlineboutique
-description: A Helm chart for Kubernetes for Online Boutique
+name: E-commerce-microservices
+description: A Helm chart for Kubernetes for E-commerce Microservices
 
 type: application
 

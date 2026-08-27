@@ -19,3 +19,26 @@ metadata:
   namespace: {{ .Release.Namespace }}
 spec: {}
 {{- end }}
+{{- if .Values.peerAuthentication.create }}
+---
+# Namespace-wide mTLS mode.
+#
+# Istio's default is PERMISSIVE: a sidecar accepts BOTH mTLS and plaintext. That
+# is what makes the AuthorizationPolicies above only partly effective — they match
+# on `principals`, which are derived from the client's mTLS certificate, and a
+# plaintext caller simply has no principal. STRICT closes that: an un-meshed pod
+# can no longer reach these workloads at all.
+#
+# Named "default" and given no selector, which is the convention for a policy
+# that applies to every workload in the namespace.
+#
+# Rollback is `mode: PERMISSIVE` in values.yaml — see the probe note there.
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: {{ .Release.Namespace }}
+spec:
+  mtls:
+    mode: {{ .Values.peerAuthentication.mode }}
+{{- end }}
