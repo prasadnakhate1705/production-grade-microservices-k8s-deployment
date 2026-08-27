@@ -68,6 +68,18 @@ peerAuthentication:
   # are just bypassable by an un-meshed pod.
   mode: STRICT
 
+# How long Kubernetes waits between SIGTERM and SIGKILL when a pod is being
+# replaced. Upstream hardcoded 5s in eight templates and left the other four
+# unset (inheriting Kubernetes' 30s default) — an inconsistency with no rationale
+# behind it. Set once here so every workload agrees.
+#
+# 5s is too short for these services: they are gRPC servers holding long-lived
+# connections, and a SIGKILL mid-request surfaces as sporadic client errors on
+# every rollout. 30s gives Envoy time to drain and the app time to finish
+# in-flight calls. Pods that exit cleanly are reaped immediately, so a larger
+# value costs nothing on a well-behaved shutdown — it is a ceiling, not a wait.
+terminationGracePeriodSeconds: 30
+
 seccompProfile:
   enable: false
   type: RuntimeDefault

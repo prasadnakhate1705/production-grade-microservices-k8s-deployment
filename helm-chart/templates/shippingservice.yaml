@@ -34,6 +34,7 @@ spec:
       {{- else }}
       serviceAccountName: default
       {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- if .Values.securityContext.enable }}
       securityContext:
         fsGroup: 1000
