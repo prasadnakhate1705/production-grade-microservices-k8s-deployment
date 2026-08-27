@@ -1,6 +1,16 @@
 name: Infrastructure (Terraform)
 
-# Runs when terraform files change on main, or on any PR touching them
+# Runs when terraform files change on main, or on any PR touching them.
+#
+# ─── OFF BY DEFAULT ───────────────────────────────────────────────────────────
+# Gated on the same AWS_DEPLOY_ENABLED repository variable as deploy.yml. Note
+# this workflow reaches AWS on PULL REQUESTS too, not just on main: `terraform
+# init` reads the S3 backend and `plan` refreshes live resources, both of which
+# need the IAM role. So the gate sits on the whole job rather than on apply.
+#
+# Consequence while disabled: opening a PR that touches terraform-aws/ produces
+# no plan comment. That is expected — there is no state to plan against yet.
+# ──────────────────────────────────────────────────────────────────────────────
 on:
   push:
     branches: [main]
@@ -28,6 +38,9 @@ jobs:
   terraform:
     name: Terraform Plan / Apply
     runs-on: ubuntu-latest
+    # Every step below needs AWS credentials — init included — so the gate goes
+    # on the job, not on individual steps.
+    if: vars.AWS_DEPLOY_ENABLED == 'true'
 
     steps:
       # ── 1. Checkout code ─────────────────────────────────────────────────

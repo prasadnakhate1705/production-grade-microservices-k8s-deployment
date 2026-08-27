@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: online-boutique
+  name: e-commerce-microservices
   namespace: argocd
   # Tells ArgoCD to delete all managed K8s resources when this Application is deleted
   finalizers:
@@ -11,7 +11,7 @@ spec:
 
   source:
     repoURL: https://github.com/REPLACE_GITHUB_REPO
-    targetRevision: HEAD        # always track the latest commit on main
+    targetRevision: main
     path: helm-chart            # where the Helm chart lives in the repo
 
     helm:

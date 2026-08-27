@@ -1,5 +1,3 @@
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # IMAGE TAG RESOLUTION — each service resolves its tag in this order:
 #
@@ -10,7 +8,6 @@
 # Deployment: the other ten keep the tag they already had, so their rendered
 # manifests are byte-identical and Kubernetes treats them as a no-op.
 #
-# This file stays hand-owned — CI never rewrites it, so these comments survive.
 # ─────────────────────────────────────────────────────────────────────────────
 images:
   repository: PLACEHOLDER_ECR_REGISTRY  # set by ArgoCD Application parameter (images.repository)
@@ -30,15 +27,58 @@ serviceAccounts:
 
 networkPolicies:
   # Specifies if the NetworkPolicies are created or not. If true, one fine granular NetworkPolicy per app is created.
-  create: false
+  # Requires the VPC CNI addon with enableNetworkPolicy=true (see modules/eks/main.tf).
+  # Without it these objects are created and silently enforce nothing.
+  create: true
 
 sidecars:
   # Specifies if the Sidecars are created or not. If true, one fine granular Sidecar per app is created.
-  create: false
+  # PERFORMANCE, not security: scopes each Envoy proxy's config to what it needs
+  # rather than the whole mesh's address list. Safe to enable — no traffic effect.
+  create: true
 
 authorizationPolicies:
   # Specifies if the AuthorizationPolicies are created or not. If true, one fine granular AuthorizationPolicy per app is created.
-  create: false
+  # L7 access control on mesh identity (the ServiceAccounts above). Enforced by
+  # the Envoy sidecars, so it needs istio-injection on the namespace — which the
+  # ArgoCD Application guarantees via managedNamespaceMetadata.
+  create: true
+
+peerAuthentication:
+  create: true
+  # STRICT — sidecars accept mTLS only, rejecting plaintext. This is what makes
+  # the authorizationPolicies above airtight: they match on `principals`, which
+  # come from the caller's mTLS certificate, and under the PERMISSIVE default a
+  # plaintext caller has no principal to check.
+  #
+  # KNOWN RISK — Kubernetes probes. The kubelet probes from the node, outside the
+  # mesh, so its traffic is plaintext:
+  #   httpGet   (frontend)      — safe. istiod rewrites these to pilot-agent on
+  #                               15020, which calls the app over localhost.
+  #   tcpSocket (redis)         — safe. Only asserts the TCP connect succeeds,
+  #                               which Envoy does before any TLS handshake.
+  #   grpc      (18 probes)     — VERIFY. Native gRPC probes are a real call from
+  #                               the kubelet to the app port. Whether istiod
+  #                               rewrites these varies by Istio version; if it
+  #                               does not, every pod fails its liveness probe
+  #                               and CrashLoopBackOffs.
+  #
+  # Roll out to a test cluster first and watch pod readiness. If the gRPC probes
+  # fail, set this to PERMISSIVE — the AuthorizationPolicies keep working, they
+  # are just bypassable by an un-meshed pod.
+  mode: STRICT
+
+# How long Kubernetes waits between SIGTERM and SIGKILL when a pod is being
+# replaced. Upstream hardcoded 5s in eight templates and left the other four
+# unset (inheriting Kubernetes' 30s default) — an inconsistency with no rationale
+# behind it. Set once here so every workload agrees.
+#
+# 5s is too short for these services: they are gRPC servers holding long-lived
+# connections, and a SIGKILL mid-request surfaces as sporadic client errors on
+# every rollout. 30s gives Envoy time to drain and the app time to finish
+# in-flight calls. Pods that exit cleanly are reaped immediately, so a larger
+# value costs nothing on a well-behaved shutdown — it is a ceiling, not a wait.
+terminationGracePeriodSeconds: 30
 
 seccompProfile:
   enable: false

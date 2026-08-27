@@ -1,11 +1,8 @@
-# Online Boutique on AWS — EKS + Istio + ArgoCD
+# E-commerce App on AWS — EKS + Istio + ArgoCD
 
 A GitOps deployment of an 11-service polyglot microservices application onto
 Amazon EKS, built as a learning project.
 
-The application code is the [Online Boutique][upstream] sample. Everything
-around it — the AWS infrastructure, the mesh, the delivery pipeline — is this
-repository's own work:
 
 | Layer | What's here |
 | --- | --- |
@@ -60,20 +57,6 @@ edit terraform-aws → infra.yml  → terraform plan → apply
 
 | Home Page | Checkout Screen |
 | --- | --- |
-| [![Store homepage](/docs/img/online-boutique-frontend-1.png)](/docs/img/online-boutique-frontend-1.png) | [![Checkout screen](/docs/img/online-boutique-frontend-2.png)](/docs/img/online-boutique-frontend-2.png) |
+| [![Store homepage](/docs/img/frontend-1.png)](/docs/img/frontend-1.png) | [![Checkout screen](/docs/img/frontend-2.png)](/docs/img/frontend-2.png) |
 
-## Differences from upstream
 
-This fork is AWS-only. Removed: the GKE/Cloud Operations integrations (Cloud
-Profiler, Cloud Trace exporters, the Google Cloud OpenTelemetry collector),
-Spanner as a cart backend, the Kustomize variants, Skaffold, and the
-cloud-vendor-specific shopping assistant service. Added: everything in the
-table at the top.
-
-## Attribution
-
-The application source under [`/src`](/src) and [`/protos`](/protos) is derived
-from [GoogleCloudPlatform/microservices-demo][upstream], licensed under the
-Apache License 2.0. See [LICENSE](/LICENSE). Modifications are described above.
-
-[upstream]: https://github.com/GoogleCloudPlatform/microservices-demo

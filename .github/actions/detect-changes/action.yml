@@ -1,0 +1,111 @@
+name: Detect changed services
+description: >
+  Emits a build matrix containing only the microservices whose source tree
+  changed between two commits. Single source of truth for the service catalog —
+  both the deploy workflow and the PR validation workflow consume this, so the
+  list of services and their build contexts can never drift between them.
+
+inputs:
+  base:
+    description: >
+      Commit to diff against. An empty value, an all-zeros SHA, or a commit that
+      is unreachable in this checkout all mean "diff base unusable" and fall back
+      to building every service.
+    required: false
+    default: ""
+  head:
+    description: "Commit to diff up to. Defaults to the checked-out GITHUB_SHA."
+    required: false
+    default: ""
+  build-all:
+    description: "Force every service into the matrix, skipping the diff entirely."
+    required: false
+    default: "false"
+
+outputs:
+  matrix:
+    description: "JSON array of {service, context, valuesKey} — feed to strategy.matrix.include."
+    value: ${{ steps.detect.outputs.matrix }}
+  any:
+    description: "'true' when the matrix is non-empty. Gate dependent jobs on this."
+    value: ${{ steps.detect.outputs.any }}
+
+runs:
+  using: composite
+  steps:
+    - id: detect
+      shell: bash
+      env:
+        INPUT_BASE:      ${{ inputs.base }}
+        INPUT_HEAD:      ${{ inputs.head }}
+        INPUT_BUILD_ALL: ${{ inputs.build-all }}
+      run: |
+        set -euo pipefail
+
+        # service | watch path | build context | values.yaml key
+        # watch path and build context differ only for cartservice, whose
+        # Dockerfile sits one level deeper than its source tree.
+        CATALOG='adservice|src/adservice|src/adservice|adService
+        cartservice|src/cartservice|src/cartservice/src|cartService
+        checkoutservice|src/checkoutservice|src/checkoutservice|checkoutService
+        currencyservice|src/currencyservice|src/currencyservice|currencyService
+        emailservice|src/emailservice|src/emailservice|emailService
+        frontend|src/frontend|src/frontend|frontend
+        loadgenerator|src/loadgenerator|src/loadgenerator|loadGenerator
+        paymentservice|src/paymentservice|src/paymentservice|paymentService
+        productcatalogservice|src/productcatalogservice|src/productcatalogservice|productCatalogService
+        recommendationservice|src/recommendationservice|src/recommendationservice|recommendationService
+        shippingservice|src/shippingservice|src/shippingservice|shippingService'
+
+        HEAD_SHA="${INPUT_HEAD:-$GITHUB_SHA}"
+
+        # Building too much is merely wasteful; building too little silently
+        # ships a stale image, so every uncertain case errs toward building all.
+        BUILD_ALL=false
+        if [ "$INPUT_BUILD_ALL" = "true" ]; then
+          echo "── Caller requested a full build."
+          BUILD_ALL=true
+        elif [ -z "$INPUT_BASE" ] || [ "$INPUT_BASE" = "0000000000000000000000000000000000000000" ]; then
+          echo "── No usable diff base — rebuilding every service."
+          BUILD_ALL=true
+        elif ! git cat-file -e "${INPUT_BASE}^{commit}" 2>/dev/null; then
+          echo "── Base commit $INPUT_BASE is unreachable (force-push? shallow clone?) — rebuilding every service."
+          BUILD_ALL=true
+        fi
+
+        if [ "$BUILD_ALL" = "true" ]; then
+          FILES=""
+        else
+          FILES=$(git diff --name-only "$INPUT_BASE" "$HEAD_SHA")
+          echo "── Changed files:"
+          echo "$FILES" | sed 's/^/     /'
+        fi
+
+        INCLUDE='[]'
+        while IFS='|' read -r svc watch ctx key; do
+          svc=$(echo "$svc" | xargs)     # trim the YAML block indentation
+          watch=$(echo "$watch" | xargs)
+          ctx=$(echo "$ctx" | xargs)
+          key=$(echo "$key" | xargs)
+          [ -z "$svc" ] && continue
+
+          if [ "$BUILD_ALL" = "true" ] || echo "$FILES" | grep -q "^${watch}/"; then
+            INCLUDE=$(printf '%s' "$INCLUDE" | jq -c \
+              --arg s "$svc" --arg c "$ctx" --arg k "$key" \
+              '. + [{service:$s, context:$c, valuesKey:$k}]')
+          fi
+        done <<< "$CATALOG"
+
+        COUNT=$(printf '%s' "$INCLUDE" | jq 'length')
+        echo "matrix=$INCLUDE" >> "$GITHUB_OUTPUT"
+        if [ "$COUNT" -gt 0 ]; then
+          echo "any=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "any=false" >> "$GITHUB_OUTPUT"
+        fi
+
+        echo "── Matched $COUNT service(s):"
+        printf '%s' "$INCLUDE" | jq -r '.[].service' | sed 's/^/     /'
+        if [ "$COUNT" -eq 0 ]; then
+          echo "     (none — chart-only change)"
+        fi

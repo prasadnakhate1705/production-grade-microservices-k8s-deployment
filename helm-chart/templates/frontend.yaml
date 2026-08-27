@@ -1,17 +1,3 @@
-# Copyright 2024 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      https://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 {{- if .Values.frontend.create }}
 {{- if .Values.serviceAccounts.create }}
 apiVersion: v1
@@ -50,6 +36,7 @@ spec:
       {{- else }}
       serviceAccountName: default
       {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- if .Values.securityContext.enable }}
       securityContext:
         fsGroup: 1000
@@ -175,6 +162,21 @@ spec:
     ports:
      - port: 8080
        protocol: TCP
+  # Real browser traffic does NOT come from inside this namespace: it arrives at
+  # the istio-ingressgateway pod in istio-system (see frontend-gateway.yaml) and
+  # is proxied from there. A bare podSelector matches only the local namespace,
+  # so without this rule every external request is dropped while the in-namespace
+  # loadgenerator keeps working — the site looks healthy and is unreachable.
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: istio-system
+      podSelector:
+        matchLabels:
+          istio: ingressgateway
+    ports:
+     - port: 8080
+       protocol: TCP
   {{- end }}
   egress:
   - {}
@@ -219,6 +221,12 @@ spec:
   - from:
     - source:
         principals:
+        # The ingress gateway's mesh identity. External traffic is proxied by the
+        # istio-ingressgateway pod, so from this service's point of view the
+        # caller is that gateway's ServiceAccount — not the end user. Listing
+        # only loadGenerator here would deny every request from the internet.
+        # The SA name matches the helm_release "istio_ingress" name in istio.tf.
+        - cluster.local/ns/istio-system/sa/istio-ingressgateway
         {{- if .Values.serviceAccounts.create }}
         - cluster.local/ns/{{ .Release.Namespace }}/sa/{{ .Values.loadGenerator.name }}
         {{- else }}
