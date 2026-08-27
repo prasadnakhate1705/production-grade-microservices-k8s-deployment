@@ -1,4 +1,4 @@
-# Online Boutique on AWS — EKS + Istio + ArgoCD
+# E-commerce App on AWS — EKS + Istio + ArgoCD
 
 A GitOps deployment of an 11-service polyglot microservices application onto
 Amazon EKS, built as a learning project.
