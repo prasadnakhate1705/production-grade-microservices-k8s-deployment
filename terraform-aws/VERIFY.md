@@ -120,7 +120,7 @@ first prevents orphaned load balancers that keep billing after `destroy`.
 
 ```bash
 # 1. Delete the ArgoCD Application first — its finalizer prunes all app workloads.
-kubectl delete application online-boutique -n argocd
+kubectl delete application e-commerce-microservices -n argocd
 
 # 2. Delete the LoadBalancer Services so their NLBs are released.
 kubectl delete svc istio-ingressgateway -n istio-system

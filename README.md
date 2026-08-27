@@ -57,6 +57,6 @@ edit terraform-aws → infra.yml  → terraform plan → apply
 
 | Home Page | Checkout Screen |
 | --- | --- |
-| [![Store homepage](/docs/img/online-boutique-frontend-1.png)](/docs/img/online-boutique-frontend-1.png) | [![Checkout screen](/docs/img/online-boutique-frontend-2.png)](/docs/img/online-boutique-frontend-2.png) |
+| [![Store homepage](/docs/img/frontend-1.png)](/docs/img/frontend-1.png) | [![Checkout screen](/docs/img/frontend-2.png)](/docs/img/frontend-2.png) |
 
 

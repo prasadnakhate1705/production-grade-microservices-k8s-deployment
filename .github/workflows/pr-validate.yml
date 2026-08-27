@@ -121,7 +121,7 @@ jobs:
         # same order, plus the three parameters the Application injects. Rendering
         # it any other way would validate a manifest nobody ever deploys.
         run: |
-          helm template online-boutique helm-chart \
+          helm template e-commerce-microservices helm-chart \
             --namespace e-commerce-app \
             --values helm-chart/values.yaml \
             --values helm-chart/values-images.yaml \

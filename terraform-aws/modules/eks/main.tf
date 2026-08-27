@@ -215,6 +215,42 @@ resource "aws_eks_addon" "coredns" {
   depends_on = [aws_eks_node_group.system]
 }
 
+# ─── VPC CNI addon ────────────────────────────────────────────────────────────
+# EKS installs the VPC CNI on every cluster whether or not we declare it. We
+# declare it here for ONE reason: enableNetworkPolicy.
+#
+# NetworkPolicy is a standard Kubernetes API, but Kubernetes ships no enforcement
+# for it — that is delegated to the CNI. The VPC CNI has supported it since
+# v1.14, and it is OFF by default. With it off, the API server still accepts and
+# stores every NetworkPolicy, `kubectl get netpol` still lists them, and nothing
+# is filtered. There is no error and no warning; the policies are simply inert.
+# That silent no-op is worse than having no policies at all, because the cluster
+# looks protected.
+#
+# The chart's NetworkPolicies (networkPolicies.create in values.yaml) are
+# meaningless without this.
+resource "aws_eks_addon" "vpc_cni" {
+  cluster_name  = aws_eks_cluster.main.name
+  addon_name    = "vpc-cni"
+  addon_version = var.vpc_cni_addon_version
+
+  # The cluster is created with a default VPC CNI already installed, so this
+  # always adopts an existing addon rather than creating a fresh one.
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  configuration_values = jsonencode({
+    # String, not a bool — the addon schema types this field as a string and
+    # rejects a JSON boolean.
+    enableNetworkPolicy = "true"
+  })
+
+  # aws-node is a DaemonSet that tolerates every taint, so unlike CoreDNS it has
+  # no scheduling dependency on a node group. It does need the nodes to exist to
+  # be running anywhere, and ordering after them keeps the rollout predictable.
+  depends_on = [aws_eks_node_group.system]
+}
+
 # ─── Node Group: app ──────────────────────────────────────────────────────────
 # Hosts: all 11 microservices + their Envoy sidecars.
 # Intentionally NOT tainted: the microservices carry no tolerations, so a taint

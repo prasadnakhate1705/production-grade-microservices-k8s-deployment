@@ -57,6 +57,12 @@ variable "coredns_addon_version" {
   default     = null
 }
 
+variable "vpc_cni_addon_version" {
+  type        = string
+  description = "VPC CNI EKS addon version. Leave null to let EKS pick the default for the cluster version (NetworkPolicy support needs >= v1.14)."
+  default     = null
+}
+
 variable "node_desired_size" {
   type        = number
   description = "Desired number of app worker nodes"
