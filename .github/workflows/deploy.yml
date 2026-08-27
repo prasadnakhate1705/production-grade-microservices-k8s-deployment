@@ -1,6 +1,20 @@
 name: Build & Deploy
 
-# Runs when application code or helm chart values change on main
+# Runs when application code or helm chart values change on main.
+#
+# ─── OFF BY DEFAULT ───────────────────────────────────────────────────────────
+# Every step that touches AWS is gated on the repository variable
+# AWS_DEPLOY_ENABLED. Until it is set to the string "true", this workflow builds
+# nothing, pushes nothing, and never assumes the IAM role — the AWS jobs report
+# as skipped, which is a green run, not a red one.
+#
+# A variable rather than deleting the steps: the pipeline stays fully written and
+# reviewable now, and switching it on later is one setting, not a code change.
+#
+#   Settings → Secrets and variables → Actions → Variables
+#     AWS_DEPLOY_ENABLED = true
+#   …and the AWS_ROLE_ARN secret must exist, or every AWS job fails at OIDC.
+# ──────────────────────────────────────────────────────────────────────────────
 on:
   push:
     branches: [main]
@@ -46,74 +60,23 @@ jobs:
 
       - name: Detect
         id: detect
+        uses: ./.github/actions/detect-changes
+        with:
+          base:      ${{ github.event.before }}
+          build-all: ${{ github.event_name != 'push' }}
+
+      # Runs even when the deploy is switched off, so the log still shows what
+      # WOULD have been built. That makes a disabled run a useful dry run rather
+      # than a blank one.
+      - name: Deploy switch
         env:
-          BEFORE:     ${{ github.event.before }}
-          EVENT_NAME: ${{ github.event_name }}
+          ENABLED: ${{ vars.AWS_DEPLOY_ENABLED }}
         run: |
-          set -euo pipefail
-
-          # service | watch path | build context | values.yaml key
-          # watch path and build context differ only for cartservice, whose
-          # Dockerfile sits one level deeper than its source tree.
-          CATALOG='adservice|src/adservice|src/adservice|adService
-          cartservice|src/cartservice|src/cartservice/src|cartService
-          checkoutservice|src/checkoutservice|src/checkoutservice|checkoutService
-          currencyservice|src/currencyservice|src/currencyservice|currencyService
-          emailservice|src/emailservice|src/emailservice|emailService
-          frontend|src/frontend|src/frontend|frontend
-          loadgenerator|src/loadgenerator|src/loadgenerator|loadGenerator
-          paymentservice|src/paymentservice|src/paymentservice|paymentService
-          productcatalogservice|src/productcatalogservice|src/productcatalogservice|productCatalogService
-          recommendationservice|src/recommendationservice|src/recommendationservice|recommendationService
-          shippingservice|src/shippingservice|src/shippingservice|shippingService'
-
-          BUILD_ALL=false
-          if [ "$EVENT_NAME" != "push" ]; then
-            echo "── Manual dispatch — rebuilding every service."
-            BUILD_ALL=true
-          elif [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            echo "── No usable diff base (new branch) — rebuilding every service."
-            BUILD_ALL=true
-          elif ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
-            echo "── Base commit $BEFORE is unreachable (force-push?) — rebuilding every service."
-            BUILD_ALL=true
-          fi
-
-          if [ "$BUILD_ALL" = "true" ]; then
-            FILES=""
+          if [ "$ENABLED" = "true" ]; then
+            echo "── AWS_DEPLOY_ENABLED=true — images will be pushed to ECR and the cluster will be updated."
           else
-            FILES=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
-            echo "── Changed files:"
-            echo "$FILES" | sed 's/^/     /'
-          fi
-
-          INCLUDE='[]'
-          while IFS='|' read -r svc watch ctx key; do
-            svc=$(echo "$svc" | xargs)     # trim the YAML block indentation
-            watch=$(echo "$watch" | xargs)
-            ctx=$(echo "$ctx" | xargs)
-            key=$(echo "$key" | xargs)
-            [ -z "$svc" ] && continue
-
-            if [ "$BUILD_ALL" = "true" ] || echo "$FILES" | grep -q "^${watch}/"; then
-              INCLUDE=$(printf '%s' "$INCLUDE" | jq -c \
-                --arg s "$svc" --arg c "$ctx" --arg k "$key" \
-                '. + [{service:$s, context:$c, valuesKey:$k}]')
-            fi
-          done <<< "$CATALOG"
-
-          COUNT=$(printf '%s' "$INCLUDE" | jq 'length')
-          echo "matrix=$INCLUDE" >> "$GITHUB_OUTPUT"
-          if [ "$COUNT" -gt 0 ]; then
-            echo "any=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "any=false" >> "$GITHUB_OUTPUT"
-          fi
-
-          echo "── Building $COUNT service(s):"
-          printf '%s' "$INCLUDE" | jq -r '.[].service' | sed 's/^/     /'
-          if [ "$COUNT" -eq 0 ]; then
-            echo "     (none — chart-only change; ArgoCD will still sync it from git)"
+            echo "::notice::AWS_DEPLOY_ENABLED is not 'true' — skipping every AWS step. Nothing was pushed and the cluster was not touched."
+            echo "── To turn deploys on: Settings → Secrets and variables → Actions → Variables → AWS_DEPLOY_ENABLED = true"
           fi
 
   # ────────────────────────────────────────────────────────────────────────────
@@ -125,7 +88,9 @@ jobs:
     name: Resolve tag & registry
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.any == 'true'
+    # First AWS contact in the pipeline. Skipping here cascades: every job below
+    # needs this one, so one gate switches the whole deploy off.
+    if: needs.changes.outputs.any == 'true' && vars.AWS_DEPLOY_ENABLED == 'true'
     outputs:
       image_tag:    ${{ steps.meta.outputs.tag }}
       ecr_registry: ${{ steps.login-ecr.outputs.registry }}
@@ -155,7 +120,7 @@ jobs:
     name: Build ${{ matrix.service }}
     runs-on: ubuntu-latest
     needs: [changes, prepare]
-    if: needs.changes.outputs.any == 'true'
+    if: needs.changes.outputs.any == 'true' && vars.AWS_DEPLOY_ENABLED == 'true'
     strategy:
       # Don't cancel sibling builds because one service failed — seeing every
       # failure in one run beats fixing them one push at a time.
@@ -207,7 +172,7 @@ jobs:
     name: Update Image Tags → Trigger ArgoCD
     runs-on: ubuntu-latest
     needs: [changes, prepare, build-and-push]
-    if: needs.changes.outputs.any == 'true'
+    if: needs.changes.outputs.any == 'true' && vars.AWS_DEPLOY_ENABLED == 'true'
 
     steps:
       - name: Checkout

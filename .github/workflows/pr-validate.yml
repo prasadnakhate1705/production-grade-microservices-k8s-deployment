@@ -1,0 +1,134 @@
+name: PR Validation
+
+# The gate between dev and main.
+#
+# Pushing to dev deliberately runs NOTHING — dev is a scratch branch, and CI on
+# every work-in-progress commit is noise. Validation happens once, here, when you
+# open the PR that would put the code on main.
+#
+# Everything below is a dry run: images are built but never pushed, the chart is
+# rendered but never applied. Merging the PR is what triggers the real deploy.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "helm-chart/**"
+  workflow_dispatch:   # manual run; validates every service
+
+# ─── No AWS, structurally ─────────────────────────────────────────────────────
+# `id-token` is absent, not merely unused. Without it the runner cannot mint an
+# OIDC token, so no step in this workflow can assume the AWS role even if one
+# were added by mistake. That is the enforcement behind "validate, never deploy"
+# — a convention would rot, a missing permission cannot.
+permissions:
+  contents: read
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  # Which services does this PR actually touch?
+  #
+  # Diffs the PR base against the merge commit, so the matrix reflects the PR's
+  # own changes and not whatever else landed on main in the meantime.
+  # ────────────────────────────────────────────────────────────────────────────
+  changes:
+    name: Detect changed services
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.detect.outputs.matrix }}
+      any:    ${{ steps.detect.outputs.any }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need history to reach the PR base commit
+
+      - name: Detect
+        id: detect
+        uses: ./.github/actions/detect-changes
+        with:
+          base:      ${{ github.event.pull_request.base.sha }}
+          build-all: ${{ github.event_name == 'workflow_dispatch' }}
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Build each changed service — and stop there.
+  #
+  # `push: false` means the image is assembled and thrown away. That still proves
+  # the thing worth proving: the Dockerfile is valid, dependencies resolve, and
+  # the compile step succeeds. A Java or Go build break surfaces here, in a PR,
+  # instead of halfway through a deploy that has already pushed four other images.
+  # ────────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.any == 'true'
+    strategy:
+      # One broken service shouldn't hide the other ten. Report every failure in
+      # a single run so the PR author fixes them in one pass.
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.service }} (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.context }}/Dockerfile
+          push: false
+          # Same cache scope the deploy workflow writes on main. GitHub lets a PR
+          # read its base branch's caches, so PR builds start warm off main's
+          # layers; what this PR writes stays in the PR's own scope and is
+          # discarded when the branch is deleted.
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=pr-${{ matrix.service }}
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Render the chart.
+  #
+  # ArgoCD syncs main automatically with selfHeal on. A template that fails to
+  # render is therefore not a build failure — it is a cluster that silently stops
+  # converging, discovered whenever someone next looks at the ArgoCD UI. Cheaper
+  # to catch it in the PR.
+  # ────────────────────────────────────────────────────────────────────────────
+  helm:
+    name: Lint & render Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "v3.16.3"
+
+      - name: Helm lint
+        run: |
+          helm lint helm-chart \
+            --values helm-chart/values.yaml \
+            --values helm-chart/values-images.yaml
+
+      - name: Helm template
+        # Mirrors exactly how ArgoCD renders this chart: both value files in the
+        # same order, plus the three parameters the Application injects. Rendering
+        # it any other way would validate a manifest nobody ever deploys.
+        run: |
+          helm template online-boutique helm-chart \
+            --namespace e-commerce-app \
+            --values helm-chart/values.yaml \
+            --values helm-chart/values-images.yaml \
+            --set images.repository=000000000000.dkr.ecr.us-east-1.amazonaws.com \
+            --set frontend.platform=aws \
+            --set loadGenerator.create=true \
+            > /tmp/rendered.yaml
+
+          echo "── Rendered $(grep -c '^kind:' /tmp/rendered.yaml) resources:"
+          grep '^kind:' /tmp/rendered.yaml | sort | uniq -c | sed 's/^/     /'
