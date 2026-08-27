@@ -69,11 +69,3 @@ Profiler, Cloud Trace exporters, the Google Cloud OpenTelemetry collector),
 Spanner as a cart backend, the Kustomize variants, Skaffold, and the
 cloud-vendor-specific shopping assistant service. Added: everything in the
 table at the top.
-
-## Attribution
-
-The application source under [`/src`](/src) and [`/protos`](/protos) is derived
-from [GoogleCloudPlatform/microservices-demo][upstream], licensed under the
-Apache License 2.0. See [LICENSE](/LICENSE). Modifications are described above.
-
-[upstream]: https://github.com/GoogleCloudPlatform/microservices-demo
